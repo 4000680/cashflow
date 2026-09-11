@@ -150,9 +150,14 @@ export default function HomePage() {
   const openAdd = (direction: Direction = "expense") => {
     setEntry("");
     setEntryDirection(direction);
-    setEntryScope(scope === "all" ? "personal" : scope);
+    setEntryScope(scope === "all" ? direction === "income" ? "work" : "personal" : scope);
     setAddMode("text");
     setAddOpen(true);
+  };
+
+  const chooseEntryDirection = (direction: Direction) => {
+    setEntryDirection(direction);
+    if (direction === "income" && scope === "all") setEntryScope("work");
   };
 
   function addEntries() {
@@ -220,7 +225,7 @@ export default function HomePage() {
         <nav className="bottom-nav"><button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}><Home /><span>Главная</span></button><button className={tab === "operations" ? "active" : ""} onClick={() => setTab("operations")}><ReceiptText /><span>Операции</span></button><button className={tab === "import" ? "active" : ""} onClick={() => setTab("import")}><Upload /><span>Импорт</span>{reviewItems.length > 0 && <i>{reviewItems.length}</i>}</button><button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Settings2 /><span>Настройки</span></button></nav>
 
         {addOpen && <div className="sheet-layer"><button className="sheet-backdrop" aria-label="Закрыть" onClick={() => setAddOpen(false)} /><section className="add-sheet"><div className="sheet-handle" /><div className="section-head"><div><small>Новая запись</small><h2>Добавить операции</h2></div><button className="icon-button" onClick={() => setAddOpen(false)}><X /></button></div><div className="mode-tabs"><button className={addMode === "text" ? "active" : ""} onClick={() => setAddMode("text")}><ReceiptText />Текст</button><button className={addMode === "voice" ? "active" : ""} onClick={() => setAddMode("voice")}><Mic />Голос</button><button className={addMode === "file" ? "active" : ""} onClick={() => setAddMode("file")}><FileUp />Выписка</button></div>
-          {addMode === "text" && <div className="entry-controls"><div><small>Тип операции</small><div className="choice-pills"><button className={entryDirection === "expense" ? "active" : ""} onClick={() => setEntryDirection("expense")}>Расход</button><button className={entryDirection === "income" ? "active" : ""} onClick={() => setEntryDirection("income")}>Доход</button><button className={entryDirection === "transfer" ? "active" : ""} onClick={() => setEntryDirection("transfer")}>Перевод</button></div></div><div><small>Раздел</small><div className="choice-pills scopes"><button className={entryScope === "work" ? "active" : ""} onClick={() => setEntryScope("work")}>Работа</button><button className={entryScope === "family" ? "active" : ""} onClick={() => setEntryScope("family")}>Семья</button><button className={entryScope === "personal" ? "active" : ""} onClick={() => setEntryScope("personal")}>Личное</button><button className={entryScope === "car" ? "active" : ""} onClick={() => setEntryScope("car")}>Авто</button></div></div></div>}
+          {addMode === "text" && <div className="entry-controls"><div><small>Тип операции</small><div className="choice-pills"><button className={entryDirection === "expense" ? "active" : ""} onClick={() => chooseEntryDirection("expense")}>Расход</button><button className={entryDirection === "income" ? "active" : ""} onClick={() => chooseEntryDirection("income")}>Доход</button><button className={entryDirection === "transfer" ? "active" : ""} onClick={() => chooseEntryDirection("transfer")}>Перевод</button></div></div><div><small>Раздел</small><div className="choice-pills scopes"><button className={entryScope === "work" ? "active" : ""} onClick={() => setEntryScope("work")}>Работа</button><button className={entryScope === "family" ? "active" : ""} onClick={() => setEntryScope("family")}>Семья</button><button className={entryScope === "personal" ? "active" : ""} onClick={() => setEntryScope("personal")}>Личное</button><button className={entryScope === "car" ? "active" : ""} onClick={() => setEntryScope("car")}>Авто</button></div>{entryDirection === "income" && <p className="entry-hint">Обычный доход относится к работе. Для подарка или другого личного поступления выберите «Личное».</p>}</div></div>}
           {addMode === "text" && <><textarea value={entry} onChange={(event) => setEntry(event.target.value)} placeholder="Например: 350 кофе, 2500 заправка" /><ParsedList items={parsed} /></>}
           {addMode === "voice" && <div className="voice-panel"><span className="large-icon"><Mic /></span><h3>Голосовой ввод подключается</h3><p>Он заработает после подключения Telegram-бота к общей базе.</p></div>}
           {addMode === "file" && <div className="file-drop"><FileUp /><strong>Импорт выписки подключается</strong><span>Файлы станут доступны после подключения защищённого хранилища.</span></div>}
