@@ -9,9 +9,16 @@ import {
   resolveCategory,
   type BudgetScope,
 } from "@/lib/category-catalog";
+import { createTransactions, type StoredDirection } from "@/lib/cashflow-store";
 
 type TelegramMessage = {
   chat?: { id?: number };
+  from?: {
+    id?: number;
+    first_name?: string;
+    last_name?: string;
+    username?: string;
+  };
   text?: string;
   voice?: unknown;
   document?: { file_name?: string };
@@ -26,6 +33,9 @@ type ParsedEntry = {
   title: string;
   scope: BudgetScope;
   category: string;
+  categoryKey: string;
+  direction: StoredDirection;
+  needsReview: boolean;
 };
 
 function detectScope(text: string): BudgetScope {
@@ -38,8 +48,10 @@ function detectScope(text: string): BudgetScope {
   return "personal";
 }
 
-function isIncome(text: string) {
-  return /заработ|получил|получила|доход|выручк|оплата от|преми|зарплата пришла/i.test(text);
+function detectDirection(text: string): StoredDirection {
+  if (/перев[её]л|перевод|между своими|наличн|долг/i.test(text)) return "transfer";
+  if (/заработ|получил|получила|доход|выручк|оплата от|преми|зарплата пришла/i.test(text)) return "income";
+  return "expense";
 }
 
 function parseEntries(text: string): ParsedEntry[] {
@@ -63,25 +75,29 @@ function parseEntries(text: string): ParsedEntry[] {
           .replace(/\s+/g, " ")
           .trim() || "Операция";
 
-      const income = isIncome(title);
-      const scope: BudgetScope = income ? "work" : detectScope(title);
+      const direction = detectDirection(title);
+      const scope: BudgetScope = direction === "income" ? "work" : detectScope(title);
       const resolved = resolveCategory(title, scope);
-      const fallbackId = income
-        ? "other_work_income"
-        : scope === "work"
-          ? "other_work_expense"
-          : "other_expense";
-      const fallback = categoryCatalog.find((item) => item.id === fallbackId);
+      const fallbackId =
+        direction === "transfer"
+          ? "unknown_transfer"
+          : direction === "income"
+            ? "other_work_income"
+            : scope === "work"
+              ? "other_work_expense"
+              : "other_expense";
+      const exactCategory = resolved?.kind === direction ? resolved : null;
       const category =
-        resolved && resolved.kind === (income ? "income" : "expense")
-          ? resolved
-          : fallback;
+        exactCategory ?? categoryCatalog.find((item) => item.id === fallbackId);
 
       return {
         amount,
         title,
         scope,
         category: category?.name ?? "Прочее",
+        categoryKey: category?.id ?? fallbackId,
+        direction,
+        needsReview: direction === "transfer" || !exactCategory,
       };
     })
     .filter((entry): entry is ParsedEntry => Boolean(entry))
@@ -176,6 +192,32 @@ export async function POST(request: Request) {
         return Response.json({ ok: true });
       }
 
+      const telegramUser = message.from;
+      if (!telegramUser?.id) {
+        return Response.json({ ok: false }, { status: 400 });
+      }
+
+      await createTransactions(
+        {
+          key: `telegram:${telegramUser.id}`,
+          displayName:
+            [telegramUser.first_name, telegramUser.last_name]
+              .filter(Boolean)
+              .join(" ") ||
+            telegramUser.username ||
+            null,
+        },
+        entries.map((entry) => ({
+          title: entry.title,
+          categoryKey: entry.categoryKey,
+          scope: entry.scope,
+          amount: entry.amount,
+          direction: entry.direction,
+          source: "telegram",
+          reviewStatus: entry.needsReview ? "needs_review" : "ready",
+        })),
+      );
+
       const lines = entries.flatMap((entry) => [
         `• ${entry.title} — ${money(entry.amount)}`,
         `  ${scopeName(entry.scope)} → ${entry.category}`,
@@ -184,11 +226,13 @@ export async function POST(request: Request) {
       await sendMessage(
         chatId,
         [
-          "Я распознал:",
+          entries.some((entry) => entry.needsReview)
+            ? "Операции добавлены. Неясные записи отмечены для проверки:"
+            : "Сохранено:",
           "",
           ...lines,
           "",
-          "Пока это предварительный разбор — операции ещё не сохранены.",
+          "Все записи уже доступны в приложении.",
         ].join("\n"),
       );
     }
