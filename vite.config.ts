@@ -12,24 +12,26 @@ const { d1, r2 } = hostingConfig;
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 const managedLinux = readExecutionProfile() === "managed-linux";
+const cloudflareD1DatabaseId = process.env.CLOUDFLARE_D1_DATABASE_ID;
+const cloudflareR2BucketName = process.env.CLOUDFLARE_R2_BUCKET_NAME;
 
 const localBindingConfig = {
   main: "vinext/server/fetch-handler",
   compatibility_flags: ["nodejs_compat"],
-  d1_databases: d1
+  d1_databases: d1 && (managedLinux || cloudflareD1DatabaseId)
     ? [
         {
           binding: d1,
-          database_name: "site-creator-d1",
-          database_id: SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
+          database_name: "cashflow-db",
+          database_id: cloudflareD1DatabaseId ?? SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
         },
       ]
     : [],
-  r2_buckets: r2
+  r2_buckets: r2 && (managedLinux || cloudflareR2BucketName)
     ? [
         {
           binding: r2,
-          bucket_name: "site-creator-r2",
+          bucket_name: cloudflareR2BucketName ?? "cashflow-files",
         },
       ]
     : [],
