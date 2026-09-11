@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ArrowDownRight, ArrowUpRight, Bot, BriefcaseBusiness, Car, Check, ChevronDown,
-  ChevronLeft, ChevronRight, CircleDollarSign, FileUp, Home, Landmark, Mic, Moon,
+  ChevronLeft, ChevronRight, CircleDollarSign, Download, FileUp, Home, Landmark, Mic, Moon,
   Plus, ReceiptText, Settings2, Sun, Tags, Upload, UserRound, Users,
   WalletCards, X,
 } from "lucide-react";
@@ -22,8 +22,36 @@ type Transaction = {
   status?: ReviewStatus;
 };
 
-const STORAGE_KEY = "cashflow.transactions.v1";
-const CATEGORY_STORAGE_KEY = "cashflow.active-categories.v1";
+const DEVICE_STORAGE_KEY = "cashflow.device-id.v1";
+
+type TelegramWindow = Window & {
+  Telegram?: { WebApp?: { initData?: string; ready?: () => void } };
+};
+
+function cashflowHeaders() {
+  const telegram = (window as TelegramWindow).Telegram?.WebApp;
+  if (telegram?.initData) {
+    return { authorization: `tma ${telegram.initData}` };
+  }
+
+  let deviceId = window.localStorage.getItem(DEVICE_STORAGE_KEY);
+  if (!deviceId) {
+    deviceId = crypto.randomUUID();
+    window.localStorage.setItem(DEVICE_STORAGE_KEY, deviceId);
+  }
+  return { "x-cashflow-device-id": deviceId };
+}
+
+async function cashflowFetch(path: string, init: RequestInit = {}) {
+  return fetch(path, {
+    ...init,
+    headers: {
+      ...cashflowHeaders(),
+      ...(init.body ? { "content-type": "application/json" } : {}),
+      ...init.headers,
+    },
+  });
+}
 
 const scopeOptions: { id: ViewScope; label: string; icon: typeof Home }[] = [
   { id: "all", label: "Все", icon: WalletCards },
@@ -75,6 +103,8 @@ export default function HomePage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [activeCategoryIds, setActiveCategoryIds] = useState<string[]>([]);
   const [storageReady, setStorageReady] = useState(false);
+  const [syncError, setSyncError] = useState("");
+  const [exporting, setExporting] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [addMode, setAddMode] = useState<AddMode>("text");
   const [entry, setEntry] = useState("");
@@ -83,26 +113,39 @@ export default function HomePage() {
   const parsed = useMemo(() => parseEntries(entry, entryScope, entryDirection), [entry, entryDirection, entryScope]);
 
   useEffect(() => {
-    const loadSavedData = window.setTimeout(() => {
-      try {
-        const savedTransactions = window.localStorage.getItem(STORAGE_KEY);
-        const savedCategories = window.localStorage.getItem(CATEGORY_STORAGE_KEY);
-        if (savedTransactions) setTransactions(JSON.parse(savedTransactions) as Transaction[]);
-        if (savedCategories) setActiveCategoryIds(JSON.parse(savedCategories) as string[]);
-      } catch {
-        // Повреждённое локальное значение не должно мешать запуску приложения.
-      } finally {
-        setStorageReady(true);
-      }
-    }, 0);
-    return () => window.clearTimeout(loadSavedData);
-  }, []);
+    let active = true;
+    (window as TelegramWindow).Telegram?.WebApp?.ready?.();
 
-  useEffect(() => {
-    if (!storageReady) return;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions));
-    window.localStorage.setItem(CATEGORY_STORAGE_KEY, JSON.stringify(activeCategoryIds));
-  }, [activeCategoryIds, storageReady, transactions]);
+    async function loadTransactions() {
+      try {
+        const response = await cashflowFetch("/api/transactions");
+        const data = (await response.json()) as {
+          ok?: boolean;
+          transactions?: Transaction[];
+          error?: string;
+        };
+        if (!response.ok || !data.ok) {
+          throw new Error(data.error || "Не удалось загрузить операции");
+        }
+        if (!active) return;
+        const loaded = data.transactions ?? [];
+        setTransactions(loaded);
+        setActiveCategoryIds([...new Set(loaded.map((item) => item.categoryId))]);
+        setSyncError("");
+      } catch {
+        if (active) {
+          setSyncError("Хранилище пока не подключено. Добавленные данные не будут сохранены.");
+        }
+      } finally {
+        if (active) setStorageReady(true);
+      }
+    }
+
+    void loadTransactions();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const scopedTransactions = useMemo(() => transactions.filter((item) => {
     if (scope === "all") return true;
@@ -160,24 +203,90 @@ export default function HomePage() {
     if (direction === "income" && scope === "all") setEntryScope("work");
   };
 
-  function addEntries() {
+  async function addEntries() {
     if (!parsed.length) return;
-    const created = parsed.map((item, index): Transaction => ({
-      id: Date.now() + index, title: item.title, category: item.category.name, categoryId: item.category.id,
-      group: item.category.group, scope: item.scope, amount: item.amount, direction: item.direction,
-      source: addMode === "voice" ? "Голос" : "Вручную",
-      status: item.direction === "transfer" ? "review" : "ready",
-    }));
-    setTransactions((current) => [...created, ...current]);
-    setActiveCategoryIds((current) => [...new Set([...current, ...created.map((item) => item.categoryId)])]);
-    setEntry(""); setAddOpen(false);
+    try {
+      const response = await cashflowFetch("/api/transactions", {
+        method: "POST",
+        body: JSON.stringify({
+          entries: parsed.map((item) => ({
+            title: item.title,
+            categoryKey: item.category.id,
+            scope: item.scope,
+            amount: item.amount,
+            direction: item.direction,
+            source: "web",
+            reviewStatus: item.direction === "transfer" ? "needs_review" : "ready",
+          })),
+        }),
+      });
+      const data = (await response.json()) as {
+        ok?: boolean;
+        transactions?: Transaction[];
+        error?: string;
+      };
+      if (!response.ok || !data.ok) throw new Error(data.error || "Ошибка сохранения");
+      const created = data.transactions ?? [];
+      setTransactions((current) => [...created, ...current]);
+      setActiveCategoryIds((current) => [
+        ...new Set([...current, ...created.map((item) => item.categoryId)]),
+      ]);
+      setSyncError("");
+      setEntry("");
+      setAddOpen(false);
+    } catch {
+      setSyncError("Не удалось сохранить операцию. Текст оставлен в форме — попробуйте ещё раз.");
+    }
   }
-  function confirmReview(id: number, direction: Direction, category = "Другой рабочий доход") {
-    setTransactions((current) => current.map((item) => item.id === id ? {
-      ...item, direction, category,
-      categoryId: direction === "income" ? "other_work_income" : direction === "expense" ? "other_work_expense" : "own_transfer",
-      status: "ready",
-    } : item));
+
+  async function confirmReview(id: number, direction: Direction, category = "Другой рабочий доход") {
+    const categoryId = direction === "income" ? "other_work_income" : direction === "expense" ? "other_work_expense" : "own_transfer";
+    try {
+      const response = await cashflowFetch("/api/transactions", {
+        method: "PATCH",
+        body: JSON.stringify({ id, direction, categoryKey: categoryId }),
+      });
+      if (!response.ok) throw new Error("Ошибка изменения");
+      setTransactions((current) => current.map((item) => item.id === id ? {
+        ...item, direction, category, categoryId, status: "ready",
+      } : item));
+      setSyncError("");
+    } catch {
+      setSyncError("Не удалось изменить операцию. Попробуйте ещё раз.");
+    }
+  }
+
+  async function removeTransaction(id: number) {
+    try {
+      const response = await cashflowFetch(`/api/transactions?id=${id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("Ошибка удаления");
+      setTransactions((current) => current.filter((item) => item.id !== id));
+      setSyncError("");
+    } catch {
+      setSyncError("Не удалось удалить операцию. Попробуйте ещё раз.");
+    }
+  }
+
+  async function exportForExcel() {
+    setExporting(true);
+    try {
+      const response = await cashflowFetch("/api/transactions/export");
+      if (!response.ok) throw new Error("Ошибка выгрузки");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `cashflow-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setSyncError("");
+    } catch {
+      setSyncError("Не удалось подготовить таблицу Excel. Попробуйте ещё раз.");
+    } finally {
+      setExporting(false);
+    }
   }
 
   const heroLabel = scope === "work" ? "Чистая прибыль" : scope === "all" ? "Осталось за месяц" : "Общий остаток";
@@ -193,6 +302,7 @@ export default function HomePage() {
         <nav className="scope-strip" aria-label="Раздел бюджета">
           {scopeOptions.map((item) => <button key={item.id} className={scope === item.id ? "active" : ""} onClick={() => setScope(item.id)}><item.icon />{item.label}</button>)}
         </nav>
+        {syncError && <div className="sync-warning" role="status">{syncError}</div>}
 
         {tab === "overview" && <>
           <section className="glass hero-card">
@@ -209,11 +319,11 @@ export default function HomePage() {
           <section className="glass activity-card"><div className="section-head"><div><small>Недавнее</small><h2>Операции</h2></div>{reviewItems.length > 0 && <span className="review-count">{reviewItems.length} на проверке</span>}</div>{scopedTransactions.length ? scopedTransactions.slice(0, 5).map((item) => <TransactionRow key={item.id} item={item} />) : <div className="empty-state"><strong>Пока нет операций</strong><span>Нажмите «+», чтобы добавить первый доход или расход.</span></div>}</section>
         </>}
 
-        {tab === "operations" && <section className="glass page-card"><div className="section-head"><div><small>История</small><h2>Все операции</h2></div><button className="filter-button"><Settings2 /> Фильтры</button></div>{scopedTransactions.length ? scopedTransactions.map((item) => <TransactionRow key={item.id} item={item} />) : <div className="empty-state"><strong>История пока пустая</strong><span>Добавленные операции появятся здесь.</span></div>}</section>}
+        {tab === "operations" && <section className="glass page-card"><div className="section-head"><div><small>История</small><h2>Все операции</h2></div><button className="filter-button" onClick={() => void exportForExcel()} disabled={exporting}><Download /> {exporting ? "Готовим…" : "Excel"}</button></div>{scopedTransactions.length ? scopedTransactions.map((item) => <TransactionRow key={item.id} item={item} />) : <div className="empty-state"><strong>История пока пустая</strong><span>Добавленные операции появятся здесь.</span></div>}</section>}
 
         {tab === "import" && <div className="page-stack">
           <section className="glass upload-card"><span className="large-icon"><Upload /></span><h2>Загрузить выписку</h2><p>Отправьте PDF, CSV или XLSX. Банк определится автоматически.</p><Button className="primary-button" onClick={() => { setAddMode("file"); setAddOpen(true); }}><FileUp /> Выбрать файл</Button><div className="bank-pills"><span>Сбер</span><span>Альфа-Банк</span><span>Т-Банк</span></div></section>
-          <section className="glass review-card"><div className="section-head"><div><small>Сверка перед добавлением</small><h2>Нужно подтвердить</h2></div>{reviewItems.length > 0 && <span className="review-count">{reviewItems.length}</span>}</div>{reviewItems.length ? reviewItems.map((item) => <div className="review-item" key={item.id}><div className="review-copy"><span className={item.status === "duplicate" ? "warn" : "question"}>{item.status === "duplicate" ? <ReceiptText /> : <Landmark />}</span><div><strong>{item.title}</strong><small>{item.status === "duplicate" ? "Похоже на ручную запись" : "Перевод не считается доходом автоматически"}</small></div><b>{money(item.amount)}</b></div>{item.status === "duplicate" ? <div className="review-actions"><button onClick={() => setTransactions((current) => current.filter((tx) => tx.id !== item.id))}>Объединить</button><button onClick={() => confirmReview(item.id, "expense", item.category)}>Оставить обе</button></div> : <div className="review-actions wrap"><button onClick={() => confirmReview(item.id, "income")}>Доход от работы</button><button onClick={() => confirmReview(item.id, "expense", "Рабочий расход")}>Расход</button><button onClick={() => confirmReview(item.id, "transfer", "Между своими счетами")}>Свои счета</button></div>}</div>) : <div className="empty-state"><strong>Всё проверено</strong><span>Неясные переводы и возможные дубли появятся здесь.</span></div>}</section>
+          <section className="glass review-card"><div className="section-head"><div><small>Сверка перед добавлением</small><h2>Нужно подтвердить</h2></div>{reviewItems.length > 0 && <span className="review-count">{reviewItems.length}</span>}</div>{reviewItems.length ? reviewItems.map((item) => <div className="review-item" key={item.id}><div className="review-copy"><span className={item.status === "duplicate" ? "warn" : "question"}>{item.status === "duplicate" ? <ReceiptText /> : <Landmark />}</span><div><strong>{item.title}</strong><small>{item.status === "duplicate" ? "Похоже на ручную запись" : "Перевод не считается доходом автоматически"}</small></div><b>{money(item.amount)}</b></div>{item.status === "duplicate" ? <div className="review-actions"><button onClick={() => void removeTransaction(item.id)}>Объединить</button><button onClick={() => confirmReview(item.id, "expense", item.category)}>Оставить обе</button></div> : <div className="review-actions wrap"><button onClick={() => confirmReview(item.id, "income")}>Доход от работы</button><button onClick={() => confirmReview(item.id, "expense", "Рабочий расход")}>Расход</button><button onClick={() => confirmReview(item.id, "transfer", "Между своими счетами")}>Свои счета</button></div>}</div>) : <div className="empty-state"><strong>Всё проверено</strong><span>Неясные переводы и возможные дубли появятся здесь.</span></div>}</section>
         </div>}
 
         {tab === "settings" && <div className="page-stack">
