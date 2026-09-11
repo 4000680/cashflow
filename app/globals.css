@@ -32,3 +32,6 @@ button { cursor:pointer; }
 @media (max-width:560px) { .app-shell { padding-inline:14px; }.scope-strip { margin-inline:-14px;padding-inline:14px; }.glass { border-radius:23px; }.hero-amount { font-size:34px; }.hero-metrics>div { padding:10px 8px; }.hero-metrics span { display:none; }.analytics-grid { align-items:flex-start;gap:14px; }.donut { width:126px;height:126px; }.donut::before { inset:15px; }.donut>div { width:85px; }.transaction-row em { display:none; }.fab { right:22px; }.review-actions { margin-left:0; }.brand small { display:none; } }
 @media (max-width:390px) { .analytics-grid { align-items:center;flex-direction:column; }.legend { width:100%; }.hero-metrics strong { font-size:12px; } }
 @media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto!important;transition:none!important; } }
+
+.sync-warning { margin:10px 0 2px;padding:11px 13px;border:1px solid rgba(229,154,45,.28);border-radius:14px;background:rgba(229,154,45,.10);color:var(--text);font-size:13px;line-height:1.4; }
+.filter-button:disabled { cursor:wait;opacity:.65; }
