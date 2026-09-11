@@ -11,6 +11,13 @@ type BotInfo = {
   username?: string;
 };
 
+type WebhookInfo = {
+  url: string;
+  pending_update_count: number;
+  last_error_date?: number;
+  last_error_message?: string;
+};
+
 const WEBHOOK_URL = `${CASHFLOW_APP_URL}/api/telegram/webhook`;
 
 export async function GET(request: Request) {
@@ -63,11 +70,21 @@ export async function GET(request: Request) {
       ],
     });
 
+    const webhookInfo = await callTelegram<WebhookInfo>(token, "getWebhookInfo");
+
     return Response.json({
       ok: true,
       bot: `@${bot.username}`,
       webhook: WEBHOOK_URL,
       menu_button: CASHFLOW_APP_URL,
+      telegram_status: {
+        webhook_matches: webhookInfo.url === WEBHOOK_URL,
+        pending_updates: webhookInfo.pending_update_count,
+        last_error_at: webhookInfo.last_error_date
+          ? new Date(webhookInfo.last_error_date * 1000).toISOString()
+          : null,
+        last_error: webhookInfo.last_error_message ?? null,
+      },
     });
   } catch (error) {
     console.error("Telegram setup error", error);
