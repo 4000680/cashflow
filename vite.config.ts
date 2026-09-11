@@ -24,6 +24,7 @@ const localBindingConfig = {
           binding: d1,
           database_name: "cashflow-db",
           database_id: cloudflareD1DatabaseId ?? SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
+          migrations_dir: "../../drizzle",
         },
       ]
     : [],
