@@ -24,7 +24,7 @@ export const merchantRules: MerchantRule[] = [
   { id: "food_delivery", categoryId: "delivery_food", patterns: [/доставка еды/i, /\bfood delivery\b/i], confidence: "medium" },
   { id: "subscriptions", categoryId: "subscriptions", patterns: [/подписк/i, /\bsubscription\b/i], confidence: "medium" },
   { id: "powerbank", categoryId: "powerbank_rental", patterns: [/пауэрбанк/i, /\bpowerbank\b/i], confidence: "medium" },
-  { id: "travel", categoryId: "travel", patterns: [/турагент/i, /путешеств/i], confidence: "medium" },
+  { id: "travel", categoryId: "travel", patterns: [/турагент/i, /путешеств/i, /\btour\b/i], confidence: "medium" },
   { id: "marketplace", categoryId: "marketplaces", patterns: [/маркетплейс/i, /\bmarketplace\b/i], confidence: "medium" },
   { id: "flowers", categoryId: "gifts", patterns: [/цветочн/i, /\bflowers\b/i], confidence: "medium" },
   { id: "home_improvement", categoryId: "home_repairs", patterns: [/стройматериал/i, /ремонт дома/i], confidence: "medium" },

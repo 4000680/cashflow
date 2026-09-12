@@ -661,6 +661,7 @@ export async function GET() {
       "voice",
       "transfer-review",
       "statement-operation-column-v2",
+      "merchant-category-priority-v2",
       "import-undo",
       "transaction-delete",
     ],

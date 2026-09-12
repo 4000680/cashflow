@@ -31,11 +31,16 @@ function parseAmount(value: string) {
   return Number.isFinite(amount) ? amount : null;
 }
 
-function detectDirection(row: string, signedAmount: number): StoredDirection | null {
+function detectDirection(
+  row: string,
+  signedAmount: number,
+  recognizedKind?: StoredDirection,
+): StoredDirection | null {
   // A QR/card payment can contain the word "СБП", but it is still a debit,
   // not an incoming transfer. Explicit payment wording takes precedence.
-  if (PAYMENT_RE.test(row)) return "expense";
+  if (PAYMENT_RE.test(row) || recognizedKind === "expense") return "expense";
   if (INCOME_RE.test(row) || /\+\s*\d/.test(row)) return "income";
+  if (recognizedKind === "income") return "income";
   if (TRANSFER_RE.test(row)) return "transfer";
   if (signedAmount < 0 || EXPENSE_RE.test(row)) return "expense";
   return null;
@@ -82,10 +87,14 @@ function parseRow(row: string): ImportedTransaction | null {
   // amount. The rightmost monetary value is the running balance and must never
   // be imported as another transaction.
   const signedAmount = amounts[0];
-  const direction = detectDirection(compact, signedAmount);
+  const title = cleanDescription(compact);
+  // Bank text may say "Перевод для ...", while the same row contains a real
+  // merchant/MCC category such as "Супермаркеты". A recognized purchase
+  // category is stronger evidence than the generic word "перевод".
+  const recognized = resolveCategory(title);
+  const direction = detectDirection(compact, signedAmount, recognized?.kind);
   if (!direction) return null;
 
-  const title = cleanDescription(compact);
   const scope = detectScope(title, direction);
   const resolved = resolveCategory(title, scope);
   const exactCategory = resolved?.kind === direction ? resolved : null;
