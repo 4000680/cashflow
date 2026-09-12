@@ -28,6 +28,14 @@ export type ReviewTransaction = {
   amount: number;
   direction: StoredDirection;
   scope: BudgetScope;
+  categoryKey: string | null;
+  occurredAt: Date;
+};
+
+export type ImportBatchSummary = {
+  id: number;
+  fileName: string;
+  transactionCount: number;
 };
 
 type TransactionRow = {
@@ -304,7 +312,8 @@ export async function nextReviewTransaction(identity: OwnerIdentity) {
   const ownerId = await ensureOwner(identity);
   const row = await getD1()
     .prepare(
-      `SELECT t.id, t.description, t.amount_kopecks, t.direction, s.kind AS scope
+      `SELECT t.id, t.description, t.amount_kopecks, t.direction,
+              t.category_key, t.occurred_at, s.kind AS scope
        FROM transactions t
        JOIN scopes s ON s.id = t.scope_id
        WHERE t.owner_id = ? AND t.review_status = 'needs_review'
@@ -317,6 +326,8 @@ export async function nextReviewTransaction(identity: OwnerIdentity) {
       description: string | null;
       amount_kopecks: number;
       direction: StoredDirection;
+      category_key: string | null;
+      occurred_at: number;
       scope: BudgetScope;
     }>();
   if (!row) return null;
@@ -326,7 +337,109 @@ export async function nextReviewTransaction(identity: OwnerIdentity) {
     amount: row.amount_kopecks / 100,
     direction: row.direction,
     scope: row.scope,
+    categoryKey: row.category_key,
+    occurredAt: new Date(row.occurred_at * 1000),
   } satisfies ReviewTransaction;
+}
+
+export async function latestImportBatch(identity: OwnerIdentity) {
+  const ownerId = await ensureOwner(identity);
+  const row = await getD1()
+    .prepare(
+      `SELECT ib.id, ib.original_name, COUNT(t.id) AS transaction_count
+       FROM import_batches ib
+       LEFT JOIN transactions t
+         ON t.import_batch_id = ib.id AND t.owner_id = ib.owner_id
+       WHERE ib.owner_id = ? AND ib.status != 'failed'
+       GROUP BY ib.id, ib.original_name
+       HAVING COUNT(t.id) > 0
+       ORDER BY ib.id DESC
+       LIMIT 1`,
+    )
+    .bind(ownerId)
+    .first<{ id: number; original_name: string | null; transaction_count: number }>();
+  if (!row) return null;
+  return {
+    id: row.id,
+    fileName: row.original_name ?? "банковская выписка",
+    transactionCount: Number(row.transaction_count),
+  } satisfies ImportBatchSummary;
+}
+
+export async function getImportBatch(
+  identity: OwnerIdentity,
+  id: number,
+) {
+  const ownerId = await ensureOwner(identity);
+  const row = await getD1()
+    .prepare(
+      `SELECT ib.id, ib.original_name, COUNT(t.id) AS transaction_count
+       FROM import_batches ib
+       LEFT JOIN transactions t
+         ON t.import_batch_id = ib.id AND t.owner_id = ib.owner_id
+       WHERE ib.owner_id = ? AND ib.id = ?
+       GROUP BY ib.id, ib.original_name`,
+    )
+    .bind(ownerId, id)
+    .first<{ id: number; original_name: string | null; transaction_count: number }>();
+  if (!row) return null;
+  return {
+    id: row.id,
+    fileName: row.original_name ?? "банковская выписка",
+    transactionCount: Number(row.transaction_count),
+  } satisfies ImportBatchSummary;
+}
+
+export async function deleteImportBatch(identity: OwnerIdentity, id: number) {
+  const ownerId = await ensureOwner(identity);
+  const batch = await getImportBatch(identity, id);
+  if (!batch) return null;
+  const database = getD1();
+  await database.batch([
+    database
+      .prepare("DELETE FROM transactions WHERE owner_id = ? AND import_batch_id = ?")
+      .bind(ownerId, id),
+    database
+      .prepare("DELETE FROM import_batches WHERE owner_id = ? AND id = ?")
+      .bind(ownerId, id),
+  ]);
+  return batch;
+}
+
+export async function listRecentTransactions(
+  identity: OwnerIdentity,
+  limit = 6,
+) {
+  const ownerId = await ensureOwner(identity);
+  const result = await getD1()
+    .prepare(
+      `SELECT t.id, t.description, t.amount_kopecks, t.direction,
+              t.category_key, t.occurred_at, s.kind AS scope
+       FROM transactions t
+       JOIN scopes s ON s.id = t.scope_id
+       WHERE t.owner_id = ?
+       ORDER BY t.occurred_at DESC, t.id DESC
+       LIMIT ?`,
+    )
+    .bind(ownerId, Math.max(1, Math.min(limit, 10)))
+    .all<{
+      id: number;
+      description: string | null;
+      amount_kopecks: number;
+      direction: StoredDirection;
+      category_key: string | null;
+      occurred_at: number;
+      scope: BudgetScope;
+    }>();
+  return result.results.map((row) => ({
+    id: row.id,
+    title: row.description ?? "Операция",
+    amount: row.amount_kopecks / 100,
+    direction: row.direction,
+    scope: row.scope,
+    categoryKey: row.category_key,
+    occurredAt: new Date(row.occurred_at * 1000),
+  })) satisfies ReviewTransaction[];
 }
 
 export async function deleteTransaction(identity: OwnerIdentity, id: number) {

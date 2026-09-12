@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import {
+  CASHFLOW_APP_URL,
   callTelegram,
   cashflowKeyboard,
   createWebhookSecret,
@@ -14,8 +15,12 @@ import {
 import {
   createImportBatch,
   createTransactions,
+  deleteImportBatch,
   deleteTransaction,
   finishImportBatch,
+  getImportBatch,
+  latestImportBatch,
+  listRecentTransactions,
   nextReviewTransaction,
   updateTransaction,
   type OwnerIdentity,
@@ -141,6 +146,10 @@ function scopeName(scope: BudgetScope) {
   return "Личное";
 }
 
+function shortDate(date: Date) {
+  return new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC" }).format(date);
+}
+
 async function sendMessage(chatId: number, text: string) {
   const token = getTelegramToken();
   await callTelegram(token, "sendMessage", {
@@ -202,16 +211,55 @@ function statementSummary(entries: ImportedTransaction[]) {
   const reviews = entries.filter((item) => item.needsReview);
   const total = (items: ImportedTransaction[]) => items.reduce((sum, item) => sum + item.amount, 0);
   return [
-    `Готово — распознал ${entries.length} операций ✅`,
+    `В выписке найдено ${entries.length} операций ✅`,
+    "",
+    `Автоматически обработано: ${entries.length - reviews.length}`,
+    `Нужно разобрать вместе: ${reviews.length}`,
     "",
     `Расходы: ${expenses.length} на ${money(total(expenses))}`,
     `Пополнения и доходы: ${incomes.length} на ${money(total(incomes))}`,
     reviews.length
-      ? `Нужно уточнить: ${reviews.length}. Сейчас задам вопросы по переводам.`
+      ? "Сейчас по очереди покажу неясные переводы с датой и назначением."
       : "Неясных переводов не нашёл.",
     "",
     "Операции уже добавлены в Cashflow.",
   ].join("\n");
+}
+
+function importResultKeyboard(batchId: number) {
+  return {
+    inline_keyboard: [
+      [{ text: "Открыть Cashflow", web_app: { url: CASHFLOW_APP_URL } }],
+      [{ text: "↩️ Отменить импорт этой выписки", callback_data: `undo:${batchId}` }],
+    ],
+  };
+}
+
+function reviewKeyboard(item: Awaited<ReturnType<typeof nextReviewTransaction>>) {
+  if (!item) return { inline_keyboard: [] };
+  if (item.direction === "income") {
+    return {
+      inline_keyboard: [
+        [{ text: "Личное поступление", callback_data: `review:${item.id}:income:personal` }],
+        [{ text: "Доход от работы", callback_data: `review:${item.id}:income:work` }],
+        [{ text: "Между своими счетами", callback_data: `review:${item.id}:transfer:personal` }],
+        [{ text: "Не учитывать", callback_data: `review:${item.id}:ignore:personal` }],
+      ],
+    };
+  }
+  return {
+    inline_keyboard: [
+      [
+        { text: "Личный расход", callback_data: `review:${item.id}:expense:personal` },
+        { text: "Семейный расход", callback_data: `review:${item.id}:expense:family` },
+      ],
+      [{ text: "Рабочий расход", callback_data: `review:${item.id}:expense:work` }],
+      ...(item.direction === "transfer"
+        ? [[{ text: "Между своими счетами", callback_data: `review:${item.id}:transfer:personal` }]]
+        : []),
+      [{ text: "Не учитывать", callback_data: `review:${item.id}:ignore:personal` }],
+    ],
+  };
 }
 
 async function sendReviewQuestion(chatId: number, identity: OwnerIdentity) {
@@ -223,29 +271,28 @@ async function sendReviewQuestion(chatId: number, identity: OwnerIdentity) {
   await sendMessageWithMarkup(
     chatId,
     [
-      "Помоги определить перевод:",
+      item.direction === "income" ? "Помоги определить поступление:" : "Помоги определить списание:",
       "",
-      `${item.title} — ${money(item.amount)}`,
+      `Дата: ${shortDate(item.occurredAt)}`,
+      `Сумма: ${money(item.amount)}`,
+      `Получатель / назначение: ${item.title}`,
       "",
       "Куда отнести эту сумму?",
     ].join("\n"),
-    {
-      inline_keyboard: [
-        [
-          { text: "Личный расход", callback_data: `review:${item.id}:expense:personal` },
-          { text: "Семейный расход", callback_data: `review:${item.id}:expense:family` },
-        ],
-        [
-          { text: "Рабочий расход", callback_data: `review:${item.id}:expense:work` },
-          { text: "Доход от работы", callback_data: `review:${item.id}:income:work` },
-        ],
-        [
-          { text: "Между своими счетами", callback_data: `review:${item.id}:transfer:personal` },
-        ],
-        [{ text: "Не учитывать", callback_data: `review:${item.id}:ignore:personal` }],
-      ],
-    },
+    reviewKeyboard(item),
   );
+}
+
+async function removeBotMessage(chatId: number, messageId?: number) {
+  if (!messageId) return;
+  try {
+    await callTelegram(getTelegramToken(), "deleteMessage", {
+      chat_id: chatId,
+      message_id: messageId,
+    });
+  } catch (error) {
+    console.error("Unable to delete Telegram message", error);
+  }
 }
 
 async function handleReviewCallback(query: TelegramCallbackQuery) {
@@ -284,13 +331,112 @@ async function handleReviewCallback(query: TelegramCallbackQuery) {
     text: "Сохранено",
   });
   if (query.message?.message_id) {
-    await callTelegram(token, "editMessageReplyMarkup", {
-      chat_id: chatId,
-      message_id: query.message.message_id,
-      reply_markup: { inline_keyboard: [] },
-    });
+    await removeBotMessage(chatId, query.message.message_id);
   }
   await sendReviewQuestion(chatId, identity);
+}
+
+async function askToUndoImport(chatId: number, identity: OwnerIdentity, batchId?: number) {
+  const batch = batchId
+    ? await getImportBatch(identity, batchId)
+    : await latestImportBatch(identity);
+  if (!batch || !batch.transactionCount) {
+    await sendMessage(chatId, "Не нашёл загруженную выписку, которую можно отменить.");
+    return;
+  }
+  await sendMessageWithMarkup(
+    chatId,
+    [
+      "Удалить весь импорт выписки?",
+      "",
+      `Файл: ${batch.fileName}`,
+      `Будет удалено операций: ${batch.transactionCount}`,
+      "",
+      "Это действие нельзя отменить.",
+    ].join("\n"),
+    {
+      inline_keyboard: [
+        [{ text: "Да, удалить импорт", callback_data: `undo_yes:${batch.id}` }],
+        [{ text: "Отмена", callback_data: "cancel" }],
+      ],
+    },
+  );
+}
+
+async function showDeleteMenu(chatId: number, identity: OwnerIdentity) {
+  const items = await listRecentTransactions(identity, 6);
+  if (!items.length) {
+    await sendMessage(chatId, "Пока нет операций для удаления.");
+    return;
+  }
+  await sendMessageWithMarkup(chatId, "Какую из последних операций удалить?", {
+    inline_keyboard: [
+      ...items.map((item) => [{
+        text: `${shortDate(item.occurredAt)} · ${money(item.amount)} · ${item.title.slice(0, 28)}`,
+        callback_data: `delete:${item.id}`,
+      }]),
+      [{ text: "Отмена", callback_data: "cancel" }],
+    ],
+  });
+}
+
+async function handleManagementCallback(query: TelegramCallbackQuery) {
+  const chatId = query.message?.chat?.id;
+  const identity = ownerFromUser(query.from);
+  const data = query.data ?? "";
+  if (!chatId || !identity) return;
+
+  await callTelegram(getTelegramToken(), "answerCallbackQuery", { callback_query_id: query.id });
+  if (data === "cancel") {
+    await removeBotMessage(chatId, query.message?.message_id);
+    return;
+  }
+
+  const undo = data.match(/^undo:(\d+)$/);
+  if (undo) {
+    await askToUndoImport(chatId, identity, Number(undo[1]));
+    return;
+  }
+  const confirmedUndo = data.match(/^undo_yes:(\d+)$/);
+  if (confirmedUndo) {
+    const removed = await deleteImportBatch(identity, Number(confirmedUndo[1]));
+    await removeBotMessage(chatId, query.message?.message_id);
+    await sendMessage(
+      chatId,
+      removed
+        ? `Импорт «${removed.fileName}» удалён. Убрано операций: ${removed.transactionCount} ✅`
+        : "Этот импорт уже удалён.",
+    );
+    return;
+  }
+
+  const selected = data.match(/^delete:(\d+)$/);
+  if (selected) {
+    const item = (await listRecentTransactions(identity, 10)).find(
+      (candidate) => candidate.id === Number(selected[1]),
+    );
+    if (!item) {
+      await sendMessage(chatId, "Эта операция уже удалена.");
+      return;
+    }
+    await sendMessageWithMarkup(
+      chatId,
+      `Удалить «${item.title}» на ${money(item.amount)}?`,
+      {
+        inline_keyboard: [
+          [{ text: "Да, удалить", callback_data: `delete_yes:${item.id}` }],
+          [{ text: "Отмена", callback_data: "cancel" }],
+        ],
+      },
+    );
+    return;
+  }
+  const confirmedDelete = data.match(/^delete_yes:(\d+)$/);
+  if (confirmedDelete) {
+    await deleteTransaction(identity, Number(confirmedDelete[1]));
+    await removeBotMessage(chatId, query.message?.message_id);
+    await sendMessage(chatId, "Операция удалена ✅");
+  }
 }
 
 function toBase64(buffer: ArrayBuffer) {
@@ -370,7 +516,11 @@ export async function POST(request: Request) {
 
     const update = (await request.json()) as TelegramUpdate;
     if (update.callback_query) {
-      await handleReviewCallback(update.callback_query);
+      if (update.callback_query.data?.startsWith("review:")) {
+        await handleReviewCallback(update.callback_query);
+      } else {
+        await handleManagementCallback(update.callback_query);
+      }
       return Response.json({ ok: true });
     }
 
@@ -382,13 +532,23 @@ export async function POST(request: Request) {
     }
 
     const text = message.text?.trim();
-    if (text === "/start" || text === "/help" || text === "/app") {
+    const command = text?.split("@")[0];
+    if (command === "/start" || command === "/help" || command === "/app") {
       await sendWelcome(chatId);
       return Response.json({ ok: true });
     }
 
     const identity = ownerFromUser(message.from);
     if (!identity) return Response.json({ ok: false }, { status: 400 });
+
+    if (command === "/undo") {
+      await askToUndoImport(chatId, identity);
+      return Response.json({ ok: true });
+    }
+    if (command === "/delete") {
+      await showDeleteMenu(chatId, identity);
+      return Response.json({ ok: true });
+    }
 
     if (message.voice) {
       if ((message.voice.file_size ?? 0) > 8 * 1024 * 1024) {
@@ -453,7 +613,11 @@ export async function POST(request: Request) {
           batch.id,
           entries.some((entry) => entry.needsReview) ? "review" : "committed",
         );
-        await sendMessage(chatId, statementSummary(entries));
+        await sendMessageWithMarkup(
+          chatId,
+          statementSummary(entries),
+          importResultKeyboard(batch.id),
+        );
         if (entries.some((entry) => entry.needsReview)) await sendReviewQuestion(chatId, identity);
       } catch (error) {
         console.error("Statement processing error", error);
@@ -492,6 +656,13 @@ export async function GET() {
   return Response.json({
     ok: true,
     service: "Cashflow Telegram webhook",
-    features: ["bank-statements", "voice", "transfer-review"],
+    features: [
+      "bank-statements",
+      "voice",
+      "transfer-review",
+      "statement-operation-column-v2",
+      "import-undo",
+      "transaction-delete",
+    ],
   });
 }

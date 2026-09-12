@@ -66,6 +66,8 @@ export async function GET(request: Request) {
       commands: [
         { command: "start", description: "Начать работу" },
         { command: "app", description: "Открыть приложение" },
+        { command: "undo", description: "Отменить последнюю выписку" },
+        { command: "delete", description: "Удалить отдельную операцию" },
         { command: "help", description: "Помощь" },
       ],
     });

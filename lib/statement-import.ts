@@ -8,6 +8,7 @@ const SUMMARY_RE = /итого|остаток|баланс|лимит|оборо
 const TRANSFER_RE = /перевод|сбп|card2card|card to card|с карты|на карту|выдача наличных|снятие наличных|внесение наличных/i;
 const INCOME_RE = /зачислен|поступлен|пополнен|возврат|кешб[эе]к|cashback|зарплат|процент/i;
 const EXPENSE_RE = /покупк|оплат|списан|комисси|плат[её]ж|выдача наличных|снятие наличных/i;
+const PAYMENT_RE = /оплата по qr|qr-код|покупк|оплата картой|плат[её]ж|списан|комисси/i;
 
 export type ImportedTransaction = NewStoredTransaction & {
   needsReview: boolean;
@@ -31,9 +32,12 @@ function parseAmount(value: string) {
 }
 
 function detectDirection(row: string, signedAmount: number): StoredDirection | null {
+  // A QR/card payment can contain the word "СБП", but it is still a debit,
+  // not an incoming transfer. Explicit payment wording takes precedence.
+  if (PAYMENT_RE.test(row)) return "expense";
+  if (INCOME_RE.test(row) || /\+\s*\d/.test(row)) return "income";
   if (TRANSFER_RE.test(row)) return "transfer";
   if (signedAmount < 0 || EXPENSE_RE.test(row)) return "expense";
-  if (/\+\s*\d/.test(row) || INCOME_RE.test(row)) return "income";
   return null;
 }
 
@@ -74,9 +78,10 @@ function parseRow(row: string): ImportedTransaction | null {
     .filter((amount): amount is number => amount !== null && amount !== 0);
   if (!amounts.length) return null;
 
-  // Bank statements often repeat the operation amount in account currency.
-  // The final signed amount is the most reliable column after text extraction.
-  const signedAmount = amounts.at(-1)!;
+  // In Sber and similar statements the first monetary column is the operation
+  // amount. The rightmost monetary value is the running balance and must never
+  // be imported as another transaction.
+  const signedAmount = amounts[0];
   const direction = detectDirection(compact, signedAmount);
   if (!direction) return null;
 
@@ -105,8 +110,10 @@ function transactionBlocks(lines: string[]) {
   for (const sourceLine of lines) {
     const line = sourceLine.replace(/\s+/g, " ").trim();
     if (!line) continue;
-    if (DATE_RE.test(line)) {
+    if (DATE_RE.test(line) && current && new RegExp(MONEY_RE.source, "gi").test(current)) {
       if (current) blocks.push(current);
+      current = line;
+    } else if (DATE_RE.test(line) && !current) {
       current = line;
     } else if (current) {
       current += ` ${line}`;
