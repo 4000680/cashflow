@@ -25,8 +25,24 @@ type Transaction = {
 const DEVICE_STORAGE_KEY = "cashflow.device-id.v1";
 
 type TelegramWindow = Window & {
-  Telegram?: { WebApp?: { initData?: string; ready?: () => void } };
+  Telegram?: {
+    WebApp?: {
+      initData?: string;
+      ready?: () => void;
+      expand?: () => void;
+    };
+  };
 };
+
+async function waitForTelegramWebApp() {
+  const deadline = Date.now() + 2500;
+  while (Date.now() < deadline) {
+    const webApp = (window as TelegramWindow).Telegram?.WebApp;
+    if (webApp?.initData) return webApp;
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+  }
+  return (window as TelegramWindow).Telegram?.WebApp;
+}
 
 function cashflowHeaders() {
   const telegram = (window as TelegramWindow).Telegram?.WebApp;
@@ -114,10 +130,12 @@ export default function HomePage() {
 
   useEffect(() => {
     let active = true;
-    (window as TelegramWindow).Telegram?.WebApp?.ready?.();
 
     async function loadTransactions() {
       try {
+        const telegram = await waitForTelegramWebApp();
+        telegram?.ready?.();
+        telegram?.expand?.();
         const response = await cashflowFetch("/api/transactions");
         const data = (await response.json()) as {
           ok?: boolean;

@@ -664,6 +664,7 @@ export async function GET() {
       "merchant-category-priority-v2",
       "row-bound-amount-v3",
       "structured-statement-json-v4",
+      "telegram-cloud-identity-v5",
       "import-undo",
       "transaction-delete",
     ],
