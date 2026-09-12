@@ -489,5 +489,9 @@ export async function POST(request: Request) {
 }
 
 export async function GET() {
-  return Response.json({ ok: true, service: "Cashflow Telegram webhook" });
+  return Response.json({
+    ok: true,
+    service: "Cashflow Telegram webhook",
+    features: ["bank-statements", "voice", "transfer-review"],
+  });
 }
