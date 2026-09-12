@@ -14,11 +14,20 @@ export type NewStoredTransaction = {
   source: StoredSource;
   occurredAt?: Date;
   reviewStatus?: "ready" | "needs_review";
+  importBatchId?: number;
 };
 
-type OwnerIdentity = {
+export type OwnerIdentity = {
   key: string;
   displayName?: string | null;
+};
+
+export type ReviewTransaction = {
+  id: number;
+  title: string;
+  amount: number;
+  direction: StoredDirection;
+  scope: BudgetScope;
 };
 
 type TransactionRow = {
@@ -178,11 +187,11 @@ export async function createTransactions(
 
     const result = await database
       .prepare(
-        `INSERT INTO transactions
+      `INSERT INTO transactions
          (owner_id, scope_id, category_key, direction, amount_kopecks,
           currency, occurred_at, description, source, fingerprint,
-          review_status, created_at)
-         VALUES (?, ?, ?, ?, ?, 'RUB', ?, ?, ?, ?, ?, ?)`,
+          review_status, import_batch_id, created_at)
+         VALUES (?, ?, ?, ?, ?, 'RUB', ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         ownerId,
@@ -195,6 +204,7 @@ export async function createTransactions(
         entry.source,
         fingerprint,
         entry.reviewStatus ?? "ready",
+        entry.importBatchId ?? null,
         unixTime(),
       )
       .run();
@@ -228,24 +238,95 @@ export async function updateTransaction(
   values: {
     direction: StoredDirection;
     categoryKey: string;
+    scope?: BudgetScope;
     reviewStatus: "ready" | "needs_review";
   },
 ) {
   const ownerId = await ensureOwner(identity);
+  const scopeId = values.scope ? await getScopeId(ownerId, values.scope) : null;
   await getD1()
     .prepare(
       `UPDATE transactions
-       SET direction = ?, category_key = ?, review_status = ?
+       SET direction = ?, category_key = ?, review_status = ?,
+           scope_id = COALESCE(?, scope_id)
        WHERE id = ? AND owner_id = ?`,
     )
     .bind(
       values.direction,
       values.categoryKey,
       values.reviewStatus,
+      scopeId,
       id,
       ownerId,
     )
     .run();
+}
+
+export async function createImportBatch(
+  identity: OwnerIdentity,
+  values: { checksum: string; fileName: string; bankCode?: string | null },
+) {
+  const ownerId = await ensureOwner(identity);
+  const database = getD1();
+  const existing = await database
+    .prepare("SELECT id, status FROM import_batches WHERE owner_id = ? AND checksum = ?")
+    .bind(ownerId, values.checksum)
+    .first<{ id: number; status: string }>();
+  if (existing) return { id: existing.id, duplicate: true, status: existing.status };
+
+  const result = await database
+    .prepare(
+      `INSERT INTO import_batches
+       (owner_id, source, bank_code, original_name, checksum, status, created_at)
+       VALUES (?, 'telegram', ?, ?, ?, 'queued', ?)`,
+    )
+    .bind(ownerId, values.bankCode ?? null, values.fileName, values.checksum, unixTime())
+    .run();
+  const id = Number(result.meta.last_row_id);
+  if (!id) throw new Error("Unable to create import batch");
+  return { id, duplicate: false, status: "queued" };
+}
+
+export async function finishImportBatch(
+  identity: OwnerIdentity,
+  id: number,
+  status: "parsed" | "review" | "committed" | "failed",
+  error?: string,
+) {
+  const ownerId = await ensureOwner(identity);
+  await getD1()
+    .prepare("UPDATE import_batches SET status = ?, error = ? WHERE id = ? AND owner_id = ?")
+    .bind(status, error ?? null, id, ownerId)
+    .run();
+}
+
+export async function nextReviewTransaction(identity: OwnerIdentity) {
+  const ownerId = await ensureOwner(identity);
+  const row = await getD1()
+    .prepare(
+      `SELECT t.id, t.description, t.amount_kopecks, t.direction, s.kind AS scope
+       FROM transactions t
+       JOIN scopes s ON s.id = t.scope_id
+       WHERE t.owner_id = ? AND t.review_status = 'needs_review'
+       ORDER BY t.occurred_at ASC, t.id ASC
+       LIMIT 1`,
+    )
+    .bind(ownerId)
+    .first<{
+      id: number;
+      description: string | null;
+      amount_kopecks: number;
+      direction: StoredDirection;
+      scope: BudgetScope;
+    }>();
+  if (!row) return null;
+  return {
+    id: row.id,
+    title: row.description ?? "Перевод",
+    amount: row.amount_kopecks / 100,
+    direction: row.direction,
+    scope: row.scope,
+  } satisfies ReviewTransaction;
 }
 
 export async function deleteTransaction(identity: OwnerIdentity, id: number) {

@@ -7,6 +7,12 @@ type CashflowEnv = {
   TELEGRAM_BOT_TOKEN?: string;
 };
 
+type TelegramFile = {
+  file_id: string;
+  file_size?: number;
+  file_path?: string;
+};
+
 type TelegramResult<T = unknown> = {
   ok: boolean;
   result?: T;
@@ -48,6 +54,14 @@ export async function callTelegram<T = unknown>(
     throw new Error(data.description || `Telegram API error: ${response.status}`);
   }
   return data.result as T;
+}
+
+export async function downloadTelegramFile(token: string, fileId: string) {
+  const file = await callTelegram<TelegramFile>(token, "getFile", { file_id: fileId });
+  if (!file.file_path) throw new Error("Telegram did not return a file path");
+  const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+  if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
+  return response.arrayBuffer();
 }
 
 export function cashflowKeyboard() {

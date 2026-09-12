@@ -18,6 +18,7 @@ const cloudflareR2BucketName = process.env.CLOUDFLARE_R2_BUCKET_NAME;
 const localBindingConfig = {
   main: "vinext/server/fetch-handler",
   compatibility_flags: ["nodejs_compat"],
+  ai: { binding: "AI" },
   d1_databases: d1 && (managedLinux || cloudflareD1DatabaseId)
     ? [
         {

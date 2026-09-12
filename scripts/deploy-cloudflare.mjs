@@ -71,6 +71,7 @@ async function bindDatabase(database) {
       migrations_dir: "../../drizzle",
     },
   ];
+  config.ai = { binding: "AI" };
 
   await writeFile(WRANGLER_CONFIG, `${JSON.stringify(config)}\n`);
 }

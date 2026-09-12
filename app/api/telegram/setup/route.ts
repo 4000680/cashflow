@@ -50,7 +50,7 @@ export async function GET(request: Request) {
     await callTelegram(token, "setWebhook", {
       url: WEBHOOK_URL,
       secret_token: secretToken,
-      allowed_updates: ["message"],
+      allowed_updates: ["message", "callback_query"],
       drop_pending_updates: false,
     });
 
