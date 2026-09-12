@@ -14,6 +14,16 @@ export type ImportedTransaction = NewStoredTransaction & {
   needsReview: boolean;
 };
 
+// Lightweight intermediate table reconstructed from the PDF before any
+// budget classification happens.
+export type StatementTableRow = {
+  occurredAt: Date;
+  description: string;
+  operationAmount: number;
+  balanceAfter?: number;
+  rawText: string;
+};
+
 function parseDate(value: string) {
   const match = value.match(DATE_RE);
   if (!match) return undefined;
@@ -72,7 +82,7 @@ function fallbackCategory(direction: StoredDirection, scope: BudgetScope) {
   return scope === "work" ? "other_work_expense" : "other_expense";
 }
 
-function parseRow(row: string, amountLine = row): ImportedTransaction | null {
+function parseTableRow(row: string, amountLine = row): StatementTableRow | null {
   const compact = row.replace(/\s+/g, " ").trim();
   const occurredAt = parseDate(compact);
   if (!occurredAt || SUMMARY_RE.test(compact)) return null;
@@ -86,16 +96,26 @@ function parseRow(row: string, amountLine = row): ImportedTransaction | null {
     .filter((amount): amount is number => amount !== null && amount !== 0);
   if (!amounts.length) return null;
 
-  // In Sber and similar statements the first monetary column is the operation
-  // amount. The rightmost monetary value is the running balance and must never
-  // be imported as another transaction.
-  const signedAmount = amounts[0];
   const title = cleanDescription(compact);
+  return {
+    occurredAt,
+    description: title,
+    operationAmount: amounts[0],
+    balanceAfter: amounts.length > 1 ? amounts.at(-1) : undefined,
+    rawText: compact,
+  };
+}
+
+function classifyTableRow(row: StatementTableRow): ImportedTransaction | null {
+  // The rightmost value remains balance metadata in the intermediate table.
+  // Only operationAmount is allowed to enter Cashflow.
+  const signedAmount = row.operationAmount;
+  const title = row.description;
   // Bank text may say "Перевод для ...", while the same row contains a real
   // merchant/MCC category such as "Супермаркеты". A recognized purchase
   // category is stronger evidence than the generic word "перевод".
   const recognized = resolveCategory(title);
-  const direction = detectDirection(compact, signedAmount, recognized?.kind);
+  const direction = detectDirection(row.rawText, signedAmount, recognized?.kind);
   if (!direction) return null;
 
   const scope = detectScope(title, direction);
@@ -110,7 +130,7 @@ function parseRow(row: string, amountLine = row): ImportedTransaction | null {
     amount: Math.abs(signedAmount),
     direction,
     source: "statement",
-    occurredAt,
+    occurredAt: row.occurredAt,
     reviewStatus: direction === "transfer" ? "needs_review" : "ready",
     needsReview: direction === "transfer",
   };
@@ -197,8 +217,11 @@ function deduplicate(entries: ImportedTransaction[]) {
 }
 
 export function parseStatementLines(lines: string[]) {
-  const direct = transactionBlocks(lines)
-    .map((block) => parseRow(block.text, block.amountLine))
+  const table = transactionBlocks(lines)
+    .map((block) => parseTableRow(block.text, block.amountLine))
+    .filter((item): item is StatementTableRow => Boolean(item));
+  const direct = table
+    .map(classifyTableRow)
     .filter((item): item is ImportedTransaction => Boolean(item));
   return deduplicate(direct).slice(0, 1500);
 }

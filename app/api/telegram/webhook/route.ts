@@ -663,6 +663,7 @@ export async function GET() {
       "statement-operation-column-v2",
       "merchant-category-priority-v2",
       "row-bound-amount-v3",
+      "structured-statement-json-v4",
       "import-undo",
       "transaction-delete",
     ],
