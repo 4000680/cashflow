@@ -72,12 +72,15 @@ function fallbackCategory(direction: StoredDirection, scope: BudgetScope) {
   return scope === "work" ? "other_work_expense" : "other_expense";
 }
 
-function parseRow(row: string): ImportedTransaction | null {
+function parseRow(row: string, amountLine = row): ImportedTransaction | null {
   const compact = row.replace(/\s+/g, " ").trim();
   const occurredAt = parseDate(compact);
   if (!occurredAt || SUMMARY_RE.test(compact)) return null;
 
-  const matches = [...compact.matchAll(new RegExp(MONEY_RE.source, "gi"))];
+  // Amounts must come only from the visual row that anchors this operation.
+  // Description lines may be appended for context, but their numbers and the
+  // next transaction's numbers are never eligible as this operation's amount.
+  const matches = [...amountLine.matchAll(new RegExp(MONEY_RE.source, "gi"))];
   const amounts = matches
     .map((match) => parseAmount(match[1]))
     .filter((amount): amount is number => amount !== null && amount !== 0);
@@ -113,22 +116,56 @@ function parseRow(row: string): ImportedTransaction | null {
   };
 }
 
-function transactionBlocks(lines: string[]) {
-  const blocks: string[] = [];
-  let current = "";
-  for (const sourceLine of lines) {
-    const line = sourceLine.replace(/\s+/g, " ").trim();
-    if (!line) continue;
-    if (DATE_RE.test(line) && current && new RegExp(MONEY_RE.source, "gi").test(current)) {
-      if (current) blocks.push(current);
-      current = line;
-    } else if (DATE_RE.test(line) && !current) {
-      current = line;
-    } else if (current) {
-      current += ` ${line}`;
-    }
+type TransactionBlock = {
+  text: string;
+  amountLine: string;
+};
+
+function hasMoney(line: string) {
+  return new RegExp(MONEY_RE.source, "gi").test(line);
+}
+
+function transactionBlocks(sourceLines: string[]): TransactionBlock[] {
+  const lines = sourceLines
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  // With positioned PDF extraction, a transaction anchor contains both its
+  // date and its monetary columns. Split strictly on those anchors. Lines until
+  // the next anchor enrich only the description of the current transaction.
+  const anchorIndexes = lines
+    .map((line, index) => DATE_RE.test(line) && hasMoney(line) ? index : -1)
+    .filter((index) => index >= 0);
+
+  if (anchorIndexes.length) {
+    return anchorIndexes.map((start, position) => {
+      const end = anchorIndexes[position + 1] ?? lines.length;
+      return {
+        amountLine: lines[start],
+        text: lines.slice(start, end).join(" "),
+      };
+    });
   }
-  if (current) blocks.push(current);
+
+  // Plain-text PDFs sometimes put the date and amount on consecutive lines.
+  // Keep the first monetary line after each date as that operation's anchor.
+  const blocks: TransactionBlock[] = [];
+  let currentLines: string[] = [];
+  let amountLine = "";
+  for (const line of lines) {
+    if (DATE_RE.test(line) && currentLines.length && amountLine) {
+      blocks.push({ text: currentLines.join(" "), amountLine });
+      currentLines = [line];
+      amountLine = hasMoney(line) ? line : "";
+      continue;
+    }
+    if (DATE_RE.test(line) && !currentLines.length) currentLines = [line];
+    else if (currentLines.length) currentLines.push(line);
+    if (currentLines.length && !amountLine && hasMoney(line)) amountLine = line;
+  }
+  if (currentLines.length && amountLine) {
+    blocks.push({ text: currentLines.join(" "), amountLine });
+  }
   return blocks;
 }
 
@@ -160,7 +197,9 @@ function deduplicate(entries: ImportedTransaction[]) {
 }
 
 export function parseStatementLines(lines: string[]) {
-  const direct = transactionBlocks(lines).map(parseRow).filter((item): item is ImportedTransaction => Boolean(item));
+  const direct = transactionBlocks(lines)
+    .map((block) => parseRow(block.text, block.amountLine))
+    .filter((item): item is ImportedTransaction => Boolean(item));
   return deduplicate(direct).slice(0, 1500);
 }
 
