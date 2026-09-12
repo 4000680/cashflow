@@ -665,6 +665,7 @@ export async function GET() {
       "row-bound-amount-v3",
       "structured-statement-json-v4",
       "telegram-cloud-identity-v5",
+      "telegram-signature-validation-v6",
       "import-undo",
       "transaction-delete",
     ],

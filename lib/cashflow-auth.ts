@@ -43,7 +43,9 @@ async function verifyTelegramInitData(initData: string) {
   }
 
   params.delete("hash");
-  params.delete("signature");
+  // For bot-token validation Telegram's data-check-string contains every
+  // received field except `hash`. The newer `signature` field is excluded only
+  // by the separate third-party Ed25519 validation flow.
   const checkString = [...params.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => `${key}=${value}`)

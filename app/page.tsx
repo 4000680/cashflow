@@ -150,9 +150,13 @@ export default function HomePage() {
         setTransactions(loaded);
         setActiveCategoryIds([...new Set(loaded.map((item) => item.categoryId))]);
         setSyncError("");
-      } catch {
+      } catch (error) {
         if (active) {
-          setSyncError("Хранилище пока не подключено. Добавленные данные не будут сохранены.");
+          setSyncError(
+            error instanceof Error
+              ? `Не удалось открыть облачное хранилище: ${error.message}`
+              : "Не удалось открыть облачное хранилище.",
+          );
         }
       } finally {
         if (active) setStorageReady(true);
